@@ -169,7 +169,7 @@ class JenkinsJobManager {
 			gitUrls.each{ String gitUrl ->
 				GitApi gitApi = new GitApi(gitUrl: gitUrl)
 				if (this.branchNameRegex){
-					this.gitApi.branchNameFilter = ~this.branchNameRegex
+					gitApi.branchNameFilter = ~this.branchNameRegex
 				}
 				this.gitApis << gitApi
 			}
