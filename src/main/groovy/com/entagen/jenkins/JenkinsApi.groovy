@@ -94,40 +94,31 @@ class JenkinsApi {
 
 		// should work if there's a remote ("origin/master") or no remote (just "master")
 		if (config.contains('org.jenkinsci.plugins.multiplescms.MultiSCM')){
-			println "MultiSCM?"
 			config = replaceBranchNamesInMultiSCMConfig(config, templateJob, missingJob)
-			println "Config: $config"
 		} else {
-			println "SingleSCM?"
 			config = replaceBranchNamesInConfig(config, templateJob, missingJob)
 		}
+
 
 		// this is in case there are other down-stream jobs that this job calls, we want to be sure we're replacing their names as well
 		templateJobs.each {
 			config = config.replaceAll(it.jobName, it.jobNameForBranch(missingJob.branchName))
+			println "Config for missing job $it.jobName:\n $config"
 		}
+
 
 		return config
 	}
 
 	private String replaceBranchNamesInMultiSCMConfig(String config, TemplateJob templateJob, ConcreteJob missingJob) {
 		def project = new XmlSlurper().parseText(config)
-		println "project: $project"
 		project.scm?.scms?.'hudson.plugins.git.GitSCM'?.each{ def scm ->
-			println "scm: $scm"
 			def gitUrl = scm.userRemoteConfigs?.'hudson.plugins.git.UserRemoteConfig'?.url
-			println "GitURL: $gitUrl"
 			def branchList = getGitApi(gitUrl.toString()).getBranchNames()
-			println "Branch List: $branchList"
 			if (branchList.contains(missingJob.branchName)){
-				println "Has branch"
 				String currentBranchName = scm.branches?.'hudson.plugins.git.BranchSpec'?.name.text()
-				println "Current Branch Name: $currentBranchName"
-				println "Template Branch Name: ${templateJob.templateBranchName}"
 				String newBranchName = currentBranchName.replaceAll("$templateJob.templateBranchName", "$missingJob.branchName")
-				println "New Branch Name: $newBranchName"
 				scm.branches?.'hudson.plugins.git.BranchSpec'?.name = newBranchName
-				println "New SCM: $scm"
 			}
 		}
 		return XmlUtil.serialize(project)
