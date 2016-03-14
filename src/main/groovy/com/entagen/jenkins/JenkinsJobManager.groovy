@@ -19,7 +19,7 @@ class JenkinsJobManager {
 	Boolean startOnCreate = false
 
 	JenkinsApi jenkinsApi
-	GitApi[] gitApis
+	GitApi[] gitApis = []
 
 	JenkinsJobManager(Map props) {
 		for (property in props) {
