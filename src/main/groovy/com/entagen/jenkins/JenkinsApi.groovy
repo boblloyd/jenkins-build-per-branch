@@ -10,222 +10,269 @@ import org.apache.http.HttpStatus
 import org.apache.http.HttpRequestInterceptor
 import org.apache.http.protocol.HttpContext
 import org.apache.http.HttpRequest
+import groovy.xml.XmlUtil
 
 class JenkinsApi {
-    String jenkinsServerUrl
-    RESTClient restClient
-    HttpRequestInterceptor requestInterceptor
-    boolean findCrumb = true
-    def crumbInfo
+	String jenkinsServerUrl
+	RESTClient restClient
+	HttpRequestInterceptor requestInterceptor
+	boolean findCrumb = true
+	def crumbInfo
+	GitApi gitApi
 
-    public void setJenkinsServerUrl(String jenkinsServerUrl) {
-        if (!jenkinsServerUrl.endsWith("/")) jenkinsServerUrl += "/"
-        this.jenkinsServerUrl = jenkinsServerUrl
-        this.restClient = new RESTClient(jenkinsServerUrl)
-    }
+	def ignoreTags = ["assignedNode"]
+	
+	private GitApi getGitApi(String gitUrl = ''){
+		if (!gitApi){
+			gitApi = new GitApi()
+		}
+		gitApi.gitUrl = gitUrl
+		return gitApi	
+	}
+	
+	public void setJenkinsServerUrl(String jenkinsServerUrl) {
+		if (!jenkinsServerUrl.endsWith("/")) jenkinsServerUrl += "/"
+		this.jenkinsServerUrl = jenkinsServerUrl
+		this.restClient = new RESTClient(jenkinsServerUrl)
+	}
 
-    public void addBasicAuth(String jenkinsServerUser, String jenkinsServerPassword) {
-        println "use basic authentication"
+	public void addBasicAuth(String jenkinsServerUser, String jenkinsServerPassword) {
+		println "use basic authentication"
 
-        this.requestInterceptor = new HttpRequestInterceptor() {
-            void process(HttpRequest httpRequest, HttpContext httpContext) {
-                def auth = jenkinsServerUser + ':' + jenkinsServerPassword
-                httpRequest.addHeader('Authorization', 'Basic ' + auth.bytes.encodeBase64().toString())
-            }
-        }
+		this.requestInterceptor = new HttpRequestInterceptor() {
+					void process(HttpRequest httpRequest, HttpContext httpContext) {
+						def auth = jenkinsServerUser + ':' + jenkinsServerPassword
+						httpRequest.addHeader('Authorization', 'Basic ' + auth.bytes.encodeBase64().toString())
+					}
+				}
 
-        this.restClient.client.addRequestInterceptor(this.requestInterceptor)
-    }
+		this.restClient.client.addRequestInterceptor(this.requestInterceptor)
+	}
 
-    List<String> getJobNames(String prefix = null) {
-        println "getting project names from " + jenkinsServerUrl + "api/json"
-        def response = get(path: 'api/json')
-        def jobNames = response.data.jobs.name
-        if (prefix) return jobNames.findAll { it.startsWith(prefix) }
-        return jobNames
-    }
+	List<String> getJobNames(String prefix = null) {
+		println "getting project names from " + jenkinsServerUrl + "api/json"
+		def response = get(path: 'api/json')
+		def jobNames = response.data.jobs.name
+		if (prefix) return jobNames.findAll { it.startsWith(prefix) }
+		return jobNames
+	}
 
-    String getJobConfig(String jobName) {
-        def response = get(path: "job/${jobName}/config.xml", contentType: TEXT,
-                headers: [Accept: 'application/xml'])
-        response.data.text
-    }
+	String getJobConfig(String jobName) {
+		def response = get(path: "job/${jobName}/config.xml", contentType: TEXT,
+		headers: [Accept: 'application/xml'])
+		response.data.text
+	}
 
-    void cloneJobForBranch(ConcreteJob missingJob, List<TemplateJob> templateJobs) {
-        String missingJobConfig = configForMissingJob(missingJob, templateJobs)
-        TemplateJob templateJob = missingJob.templateJob
+	void cloneJobForBranch(ConcreteJob missingJob, List<TemplateJob> templateJobs) {
+		String missingJobConfig = configForMissingJob(missingJob, templateJobs)
+		TemplateJob templateJob = missingJob.templateJob
 
-        //Copy job with jenkins copy job api, this will make sure jenkins plugins get the call to make a copy if needed (promoted builds plugin needs this)
-        post('createItem', missingJobConfig, [name: missingJob.jobName, mode: 'copy', from: templateJob.jobName], ContentType.XML)
+		//Copy job with jenkins copy job api, this will make sure jenkins plugins get the call to make a copy if needed (promoted builds plugin needs this)
+		post('createItem', missingJobConfig, [name: missingJob.jobName, mode: 'copy', from: templateJob.jobName], ContentType.XML)
 
-        post('job/' + missingJob.jobName + "/config.xml", missingJobConfig, [:], ContentType.XML)
-        //Forced disable enable to work around Jenkins' automatic disabling of clones jobs
-        //But only if the original job was enabled
-        post('job/' + missingJob.jobName + '/disable')
-        if (!missingJobConfig.contains("<disabled>true</disabled>")) {
-            post('job/' + missingJob.jobName + '/enable')
-        }
-    }
+		post('job/' + missingJob.jobName + "/config.xml", missingJobConfig, [:], ContentType.XML)
+		//Forced disable enable to work around Jenkins' automatic disabling of clones jobs
+		//But only if the original job was enabled
+		post('job/' + missingJob.jobName + '/disable')
+		if (!missingJobConfig.contains("<disabled>true</disabled>")) {
+			post('job/' + missingJob.jobName + '/enable')
+		}
+	}
 
-    void startJob(ConcreteJob job) {
-        println "Starting job ${job.jobName}."
-        post('job/' + job.jobName + '/build')
-    }
+	void startJob(ConcreteJob job) {
+		println "Starting job ${job.jobName}."
+		post('job/' + job.jobName + '/build')
+	}
 
-    String configForMissingJob(ConcreteJob missingJob, List<TemplateJob> templateJobs) {
-        TemplateJob templateJob = missingJob.templateJob
-        String config = getJobConfig(templateJob.jobName)
-
-        def ignoreTags = ["assignedNode"]
-
-        // should work if there's a remote ("origin/master") or no remote (just "master")
-        config = config.replaceAll("(\\p{Alnum}*[>/])(${templateJob.templateBranchName})<") { fullMatch, prefix, branchName ->
-            // jenkins job configs may have certain fields whose values should not be replaced, the most common being <assignedNode>
-            // which is used to assign a job to a specific node (potentially "master") and the "master" branch
-            if (ignoreTags.find { it + ">" == prefix}) {
-                return fullMatch
-            } else {
-                return "$prefix${missingJob.branchName}<"
-            }
-        }
-
-        // this is in case there are other down-stream jobs that this job calls, we want to be sure we're replacing their names as well
-        templateJobs.each {
-            config = config.replaceAll(it.jobName, it.jobNameForBranch(missingJob.branchName))
-        }
-
-        return config
-    }
-
-    void deleteJob(String jobName) {
-        println "deleting job $jobName"
-        post("job/${jobName}/doDelete")
-    }
-
-    void createViewForBranch(BranchView branchView, String nestedWithinView = null, String viewRegex = null) {
-        String viewName = branchView.viewName
-        Map body = [name: viewName, mode: 'hudson.model.ListView', Submit: 'OK', json: '{"name": "' + viewName + '", "mode": "hudson.model.ListView"}']
-        println "creating view - viewName:${viewName}, nestedView:${nestedWithinView}"
-        post(buildViewPath("createView", nestedWithinView), body)
-
-        String regex = viewRegex ? viewRegex.replaceAll("master", branchView.safeBranchName) : "${branchView.templateJobPrefix}.*${branchView.safeBranchName}"
-        body = [useincluderegex: 'on', includeRegex: regex, name: viewName, json: '{"name": "' + viewName + '","useincluderegex": {"includeRegex": "' + regex + '"},' + VIEW_COLUMNS_JSON + '}']
-        println "configuring view ${viewName}"
-        post(buildViewPath("configSubmit", nestedWithinView, viewName), body)
-    }
-
-    List<String> getViewNames(String nestedWithinView = null) {
-        String path = buildViewPath("api/json", nestedWithinView)
-        println "getting views - nestedWithinView:${nestedWithinView} at path: $path"
-        def response = get(path: path, query: [tree: 'views[name,jobs[name]]'])
-        response.data?.views?.name
-    }
-
-    void deleteView(String viewName, String nestedWithinView = null) {
-        println "deleting view - viewName:${viewName}, nestedView:${nestedWithinView}"
-        post(buildViewPath("doDelete", nestedWithinView, viewName))
-    }
-
-    protected String buildViewPath(String pathSuffix, String... nestedViews) {
-        List elems = nestedViews.findAll { it != null }
-        String viewPrefix = elems.collect { "view/${it}" }.join('/')
-
-        if (viewPrefix) return "$viewPrefix/$pathSuffix"
-
-        return pathSuffix
-    }
-
-    protected get(Map map) {
-        // get is destructive to the map, if there's an error we want the values around still
-        Map mapCopy = map.clone() as Map
-        def response
-
-        assert mapCopy.path != null, "'path' is a required attribute for the GET method"
-
-        try {
-            response = restClient.get(map)
-        } catch (HttpHostConnectException ex) {
-            println "Unable to connect to host: $jenkinsServerUrl"
-            throw ex
-        } catch (UnknownHostException ex) {
-            println "Unknown host: $jenkinsServerUrl"
-            throw ex
-        } catch (HttpResponseException ex) {
-            def message = "Unexpected failure with path $jenkinsServerUrl${mapCopy.path}, HTTP Status Code: ${ex.response?.status}, full map: $mapCopy"
-            throw new Exception(message, ex)
-        }
-
-        assert response.status < 400
-        return response
-    }
-
-    /**
-     * @author Kelly Robinson
-     * from https://github.com/kellyrob99/Jenkins-api-tour/blob/master/src/main/groovy/org/kar/hudson/api/PostRequestSupport.groovy
-     */
-    protected Integer post(String path, postBody = [:], params = [:], ContentType contentType = ContentType.URLENC) {
-
-        //Added the support for jenkins CSRF option, this could be changed to be a build flag if needed.
-        //http://jenkinsurl.com/crumbIssuer/api/json  get crumb for csrf protection  json: {"crumb":"c8d8812d615292d4c0a79520bacfa7d8","crumbRequestField":".crumb"}
-        if (findCrumb) {
-            findCrumb = false
-            println "Trying to find crumb: ${jenkinsServerUrl}crumbIssuer/api/json"
-            try {
-                def response = restClient.get(path: "crumbIssuer/api/json")
-
-                if (response.data.crumbRequestField && response.data.crumb) {
-                    crumbInfo = [:]
-                    crumbInfo['field'] = response.data.crumbRequestField
-                    crumbInfo['crumb'] = response.data.crumb
-                }
-                else {
-                    println "Found crumbIssuer but didn't understand the response data trying to move on."
-                    println "Response data: " + response.data
-                }
-            }
-            catch (HttpResponseException e) {
-                if (e.response?.status == 404) {
-                    println "Couldn't find crumbIssuer for jenkins. Just moving on it may not be needed."
-                }
-                else {
-                    def msg = "Unexpected failure on ${jenkinsServerUrl}crumbIssuer/api/json: ${resp.statusLine} ${resp.status}"
-                    throw new Exception(msg)
-                }
-            }
-        }
-
-        if (crumbInfo) {
-            params[crumbInfo.field] = crumbInfo.crumb
-        }
+	String configForMissingJob(ConcreteJob missingJob, List<TemplateJob> templateJobs) {
+		TemplateJob templateJob = missingJob.templateJob
+		String config = getJobConfig(templateJob.jobName)
 
 
 
+		// should work if there's a remote ("origin/master") or no remote (just "master")
+		if (config.contains('org.jenkinsci.plugins.multiplescms.MultiSCM')){
+			println "MultiSCM?"
+			config = replaceBranchNamesInMultiSCMConfig(config, templateJob, missingJob)
+			println "Config: $config"
+		} else {
+			println "SingleSCM?"
+			config = replaceBranchNamesInConfig(config, templateJob, missingJob)
+		}
+
+		// this is in case there are other down-stream jobs that this job calls, we want to be sure we're replacing their names as well
+		templateJobs.each {
+			config = config.replaceAll(it.jobName, it.jobNameForBranch(missingJob.branchName))
+		}
+
+		return config
+	}
+
+	private String replaceBranchNamesInMultiSCMConfig(String config, TemplateJob templateJob, ConcreteJob missingJob) {
+		def project = new XmlSlurper().parseText(config)
+		println "project: $project"
+		project.scm?.scms?.'hudson.plugins.git.GitSCM'?.each{ def scm ->
+			println "scm: $scm"
+			def gitUrl = scm.userRemoteConfigs?.'hudson.plugins.git.UserRemoteConfig'?.url
+			println "GitURL: $gitUrl"
+			def branchList = getGitApi(gitUrl.toString()).getBranchNames()
+			println "Branch List: $branchList"
+			if (branchList.contains(missingJob.branchName)){
+				println "Has branch"
+				String currentBranchName = scm.branches?.'hudson.plugins.git.BranchSpec'?.name.text()
+				println "Current Branch Name: $currentBranchName"
+				println "Template Branch Name: ${templateJob.templateBranchName}"
+				String newBranchName = currentBranchName.replaceAll("$templateJob.templateBranchName", "$missingJob.branchName")
+				println "New Branch Name: $newBranchName"
+				scm.branches?.'hudson.plugins.git.BranchSpec'?.name = newBranchName
+				println "New SCM: $scm"
+			}
+		}
+		return project.toString()
+	}
+
+	private String replaceBranchNamesInConfig(String config, TemplateJob templateJob, ConcreteJob missingJob) {
+		config = config.replaceAll("(\\p{Alnum}*[>/])(${templateJob.templateBranchName})<") { fullMatch, prefix, branchName ->
+			// jenkins job configs may have certain fields whose values should not be replaced, the most common being <assignedNode>
+			// which is used to assign a job to a specific node (potentially "master") and the "master" branch
+			if (ignoreTags.find { it + ">" == prefix}) {
+				return fullMatch
+			} else {
+				return "$prefix${missingJob.branchName}<"
+			}
+		}
+		return config
+	}
+
+	void deleteJob(String jobName) {
+		println "deleting job $jobName"
+		post("job/${jobName}/doDelete")
+	}
+
+	void createViewForBranch(BranchView branchView, String nestedWithinView = null, String viewRegex = null) {
+		String viewName = branchView.viewName
+		Map body = [name: viewName, mode: 'hudson.model.ListView', Submit: 'OK', json: '{"name": "' + viewName + '", "mode": "hudson.model.ListView"}']
+		println "creating view - viewName:${viewName}, nestedView:${nestedWithinView}"
+		post(buildViewPath("createView", nestedWithinView), body)
+
+		String regex = viewRegex ? viewRegex.replaceAll("master", branchView.safeBranchName) : "${branchView.templateJobPrefix}.*${branchView.safeBranchName}"
+		body = [useincluderegex: 'on', includeRegex: regex, name: viewName, json: '{"name": "' + viewName + '","useincluderegex": {"includeRegex": "' + regex + '"},' + VIEW_COLUMNS_JSON + '}']
+		println "configuring view ${viewName}"
+		post(buildViewPath("configSubmit", nestedWithinView, viewName), body)
+	}
+
+	List<String> getViewNames(String nestedWithinView = null) {
+		String path = buildViewPath("api/json", nestedWithinView)
+		println "getting views - nestedWithinView:${nestedWithinView} at path: $path"
+		def response = get(path: path, query: [tree: 'views[name,jobs[name]]'])
+		response.data?.views?.name
+	}
+
+	void deleteView(String viewName, String nestedWithinView = null) {
+		println "deleting view - viewName:${viewName}, nestedView:${nestedWithinView}"
+		post(buildViewPath("doDelete", nestedWithinView, viewName))
+	}
+
+	protected String buildViewPath(String pathSuffix, String... nestedViews) {
+		List elems = nestedViews.findAll { it != null }
+		String viewPrefix = elems.collect { "view/${it}" }.join('/')
+
+		if (viewPrefix) return "$viewPrefix/$pathSuffix"
+
+		return pathSuffix
+	}
+
+	protected get(Map map) {
+		// get is destructive to the map, if there's an error we want the values around still
+		Map mapCopy = map.clone() as Map
+		def response
+
+		assert mapCopy.path != null, "'path' is a required attribute for the GET method"
+
+		try {
+			response = restClient.get(map)
+		} catch (HttpHostConnectException ex) {
+			println "Unable to connect to host: $jenkinsServerUrl"
+			throw ex
+		} catch (UnknownHostException ex) {
+			println "Unknown host: $jenkinsServerUrl"
+			throw ex
+		} catch (HttpResponseException ex) {
+			def message = "Unexpected failure with path $jenkinsServerUrl${mapCopy.path}, HTTP Status Code: ${ex.response?.status}, full map: $mapCopy"
+			throw new Exception(message, ex)
+		}
+
+		assert response.status < 400
+		return response
+	}
+
+	/**
+	 * @author Kelly Robinson
+	 * from https://github.com/kellyrob99/Jenkins-api-tour/blob/master/src/main/groovy/org/kar/hudson/api/PostRequestSupport.groovy
+	 */
+	protected Integer post(String path, postBody = [:], params = [:], ContentType contentType = ContentType.URLENC) {
+
+		//Added the support for jenkins CSRF option, this could be changed to be a build flag if needed.
+		//http://jenkinsurl.com/crumbIssuer/api/json  get crumb for csrf protection  json: {"crumb":"c8d8812d615292d4c0a79520bacfa7d8","crumbRequestField":".crumb"}
+		if (findCrumb) {
+			findCrumb = false
+			println "Trying to find crumb: ${jenkinsServerUrl}crumbIssuer/api/json"
+			try {
+				def response = restClient.get(path: "crumbIssuer/api/json")
+
+				if (response.data.crumbRequestField && response.data.crumb) {
+					crumbInfo = [:]
+					crumbInfo['field'] = response.data.crumbRequestField
+					crumbInfo['crumb'] = response.data.crumb
+				}
+				else {
+					println "Found crumbIssuer but didn't understand the response data trying to move on."
+					println "Response data: " + response.data
+				}
+			}
+			catch (HttpResponseException e) {
+				if (e.response?.status == 404) {
+					println "Couldn't find crumbIssuer for jenkins. Just moving on it may not be needed."
+				}
+				else {
+					def msg = "Unexpected failure on ${jenkinsServerUrl}crumbIssuer/api/json: ${resp.statusLine} ${resp.status}"
+					throw new Exception(msg)
+				}
+			}
+		}
+
+		if (crumbInfo) {
+			params[crumbInfo.field] = crumbInfo.crumb
+		}
 
 
 
-        HTTPBuilder http = new HTTPBuilder(jenkinsServerUrl)
 
-        if (requestInterceptor) {
-            http.client.addRequestInterceptor(this.requestInterceptor)
-        }
 
-        Integer status = HttpStatus.SC_EXPECTATION_FAILED
 
-        http.handler.failure = { resp ->
-            def msg = "Unexpected failure on $jenkinsServerUrl$path: ${resp.statusLine} ${resp.status}"
-            status = resp.statusLine.statusCode
-            throw new Exception(msg)
-        }
+		HTTPBuilder http = new HTTPBuilder(jenkinsServerUrl)
 
-        http.post(path: path, body: postBody, query: params,
-                requestContentType: contentType) { resp ->
-            assert resp.statusLine.statusCode < 400
-            status = resp.statusLine.statusCode
-        }
-        return status
-    }
+		if (requestInterceptor) {
+			http.client.addRequestInterceptor(this.requestInterceptor)
+		}
 
-    static final String VIEW_COLUMNS_JSON = '''
+		Integer status = HttpStatus.SC_EXPECTATION_FAILED
+
+		http.handler.failure = { resp ->
+			def msg = "Unexpected failure on $jenkinsServerUrl$path: ${resp.statusLine} ${resp.status}"
+			status = resp.statusLine.statusCode
+			throw new Exception(msg)
+		}
+
+		http.post(path: path, body: postBody, query: params,
+		requestContentType: contentType) { resp ->
+			assert resp.statusLine.statusCode < 400
+			status = resp.statusLine.statusCode
+		}
+		return status
+	}
+
+	static final String VIEW_COLUMNS_JSON = '''
 "columns":[
       {
          "$class":"hudson.views.StatusColumn",
