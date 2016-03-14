@@ -241,7 +241,7 @@ class JenkinsApiTests extends GroovyTestCase {
         <submoduleCfg class="list"/>
       </hudson.plugins.git.GitSCM>
 	</scms>
-  </scm></project>''') == api.configForMissingJob(missingJob, []).toString()
+  </scm></project>''') == new XmlSlurper().parseText(api.configForMissingJob(missingJob, []).toString()).toString()
 	}
 
 	@Test public void testConfigForMissingJob_worksWithoutRemote() {

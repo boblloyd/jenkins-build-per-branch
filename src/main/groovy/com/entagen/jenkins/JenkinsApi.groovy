@@ -11,6 +11,7 @@ import org.apache.http.HttpRequestInterceptor
 import org.apache.http.protocol.HttpContext
 import org.apache.http.HttpRequest
 import groovy.xml.XmlUtil
+import groovy.xml.StreamingMarkupBuilder
 
 class JenkinsApi {
 	String jenkinsServerUrl
@@ -129,7 +130,7 @@ class JenkinsApi {
 				println "New SCM: $scm"
 			}
 		}
-		return project.toString()
+		return XmlUtil.serialize(project)
 	}
 
 	private String replaceBranchNamesInConfig(String config, TemplateJob templateJob, ConcreteJob missingJob) {
