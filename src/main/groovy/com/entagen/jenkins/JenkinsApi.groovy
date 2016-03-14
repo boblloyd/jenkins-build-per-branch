@@ -266,6 +266,9 @@ class JenkinsApi {
 			throw new Exception(msg)
 		}
 
+		println "Post Path: $path"
+		println "Post Body: $postBody"
+		println "Post params: $params"
 		http.post(path: path, body: postBody, query: params,
 		requestContentType: contentType) { resp ->
 			assert resp.statusLine.statusCode < 400
