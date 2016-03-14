@@ -21,15 +21,15 @@ class JenkinsApi {
 	GitApi gitApi
 
 	def ignoreTags = ["assignedNode"]
-	
+
 	private GitApi getGitApi(String gitUrl = ''){
 		if (!gitApi){
 			gitApi = new GitApi()
 		}
 		gitApi.gitUrl = gitUrl
-		return gitApi	
+		return gitApi
 	}
-	
+
 	public void setJenkinsServerUrl(String jenkinsServerUrl) {
 		if (!jenkinsServerUrl.endsWith("/")) jenkinsServerUrl += "/"
 		this.jenkinsServerUrl = jenkinsServerUrl
@@ -73,6 +73,7 @@ class JenkinsApi {
 		post('job/' + missingJob.jobName + "/config.xml", missingJobConfig, [:], ContentType.XML)
 		//Forced disable enable to work around Jenkins' automatic disabling of clones jobs
 		//But only if the original job was enabled
+		println "Post This? job/${missingJob.jobName}/disable"
 		post('job/' + missingJob.jobName + '/disable')
 		if (!missingJobConfig.contains("<disabled>true</disabled>")) {
 			post('job/' + missingJob.jobName + '/enable')
@@ -256,9 +257,10 @@ class JenkinsApi {
 			http.client.addRequestInterceptor(this.requestInterceptor)
 		}
 
-		Integer status = HttpStatus.SC_EXPECTATION_FAILED
+		Integer status = HttpStatus.SC_EXPECTATION_FAILEDÏ
 
 		http.handler.failure = { resp ->
+			println resp
 			def msg = "Unexpected failure on $jenkinsServerUrl$path: ${resp.statusLine} ${resp.status}"
 			status = resp.statusLine.statusCode
 			throw new Exception(msg)
