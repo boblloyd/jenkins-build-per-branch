@@ -87,14 +87,9 @@ class JenkinsApi {
 	}
 
 	String configForMissingJob(ConcreteJob missingJob, List<TemplateJob> templateJobs) {
-		println "Missing job name: $missingJob.jobName"
-		println "Missing job's template job name: $missingJob.templateJob.jobName"
 		TemplateJob templateJob = missingJob.templateJob
 		String config = getJobConfig(templateJob.jobName)
 		
-		println "Config to be used: $config"
-
-
 		// should work if there's a remote ("origin/master") or no remote (just "master")
 		if (config.contains('org.jenkinsci.plugins.multiplescms.MultiSCM')){
 			config = replaceBranchNamesInMultiSCMConfig(config, templateJob, missingJob)
@@ -106,9 +101,7 @@ class JenkinsApi {
 		// this is in case there are other down-stream jobs that this job calls, we want to be sure we're replacing their names as well
 		templateJobs.each {
 			config = config.replaceAll(it.jobName, it.jobNameForBranch(missingJob.branchName))
-			println "Config for missing job $it.jobName:\n $config"
 		}
-
 
 		return config
 	}
