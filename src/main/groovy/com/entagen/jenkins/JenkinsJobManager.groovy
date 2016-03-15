@@ -19,7 +19,7 @@ class JenkinsJobManager {
 	Boolean startOnCreate = false
 
 	JenkinsApi jenkinsApi
-	GitApi[] gitApis = []
+	def gitApis = []
 
 	JenkinsJobManager(Map props) {
 		for (property in props) {
@@ -162,7 +162,7 @@ class JenkinsJobManager {
 		return this.jenkinsApi
 	}
 
-	GitApi initGitApi() {
+	Set<GitApi> initGitApi() {
 		if (!gitApis || gitApis.size() == 0) {
 			assert gitUrl != null
 			String[] gitUrls = gitUrl.split(',')
@@ -171,7 +171,7 @@ class JenkinsJobManager {
 				if (this.branchNameRegex){
 					gitApi.branchNameFilter = ~this.branchNameRegex
 				}
-				this.gitApis << gitApi
+				this.gitApis.add gitApi
 			}
 		}
 
